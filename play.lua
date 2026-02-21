@@ -1,4 +1,4 @@
--- play.lua (最终版，帧率显示基于帧间隔)
+-- play.lua (最终版，预加载带重试限制)
 local gpu = peripheral.wrap("tm_gpu_9")
 gpu.refreshSize()
 gpu.setSize(64)
@@ -201,7 +201,7 @@ local totalFramesToPlay = #videoInfo.frame_urls
 local preloadFrames = math.min(videoInfo.fps * PRELOAD_SECONDS, totalFramesToPlay)
 local allFrameData = {}
 
--- 分批下载预加载帧
+-- 分批下载预加载帧（带重试限制）
 print("Pre-caching first " .. preloadFrames .. " frames...")
 local initBatches = {}
 for startIdx = 1, preloadFrames, BATCH_SIZE do
@@ -213,11 +213,12 @@ for startIdx = 1, preloadFrames, BATCH_SIZE do
     table.insert(initBatches, { start = startIdx, urls = urls })
 end
 
--- 并发下载所有预加载批次
+-- 并发下载所有预加载批次，最多重试3次
 local initTasks = {}
 for _, batch in ipairs(initBatches) do
     table.insert(initTasks, function()
-        while true do
+        local maxRetries = 3
+        for retry = 1, maxRetries do
             local resp = http.post({
                 url = server_url .. "/api/framepack?" .. batch.urls[1],
                 headers = { ["Content-Type"] = "application/json" },
@@ -236,12 +237,16 @@ for _, batch in ipairs(initBatches) do
                     allFrameData[globalIdx] = batchFrames[idx]
                 end
                 print("Cached init batch: " .. batch.start .. " - " .. (batch.start + #batchFrames - 1))
-                break
+                return  -- 成功则退出函数
             else
-                print("Retry init batch starting at " .. batch.start)
-                sleep(0.5)
+                print("Retry init batch starting at " .. batch.start .. " (attempt " .. retry .. "/" .. maxRetries .. ")")
+                if retry < maxRetries then
+                    sleep(0.5)
+                end
             end
         end
+        -- 所有重试失败，打印警告，该批次帧缺失
+        print("[WARN] Failed to cache init batch starting at " .. batch.start .. " after " .. maxRetries .. " attempts, skipping")
     end)
 end
 
@@ -361,7 +366,7 @@ local function httpResponseHandler()
     end
 end
 
--- 视频渲染协程（基于帧间隔的实时帧率显示）
+-- 视频渲染协程（每帧更新文字，平滑帧率）
 local function renderVideo()
     -- 等待音频准备就绪
     repeat
@@ -372,11 +377,11 @@ local function renderVideo()
     local frameDelay = 1 / videoInfo.fps
     local startTime = os.clock()
     local totalFrames = #videoInfo.frame_urls
-    local textUpdateCounter = 0
     local lastFrameTime = os.clock()
     local stallCount = 0
     local lastFrameIndex = 0
-    local lastFrameStart = nil  -- 上一帧开始时间
+    local lastFrameStart = nil
+    local smooth_fps = videoInfo.fps  -- 初始平滑帧率
 
     while running and frameIndex <= totalFrames do
         local frame_start = os.clock()
@@ -423,23 +428,20 @@ local function renderVideo()
         if success and image then
             gpu.drawImage(0, 0, image.ref())
 
-            textUpdateCounter = textUpdateCounter + 1
-            if textUpdateCounter % 5 == 1 then
-                -- 计算基于帧间隔的播放帧率
-                local play_fps = videoInfo.fps  -- 默认值
-                if lastFrameStart then
-                    local interval = frame_start - lastFrameStart
-                    if interval > 0 then
-                        play_fps = 1 / interval
-                    end
+            -- 每帧更新文字
+            if lastFrameStart then
+                local interval = frame_start - lastFrameStart
+                if interval > 0 then
+                    local instant_fps = 1 / interval
+                    smooth_fps = smooth_fps * 0.8 + instant_fps * 0.2  -- 指数移动平均
                 end
-                gpu.drawText(1, 1,
-                    frameIndex .. " / " .. totalFrames ..
-                    " fps: " .. string.format("%.1f", play_fps),
-                    0xffffff)
             end
+            gpu.drawText(1, 1,
+                frameIndex .. " / " .. totalFrames ..
+                " fps: " .. string.format("%.1f", smooth_fps),
+                0xffffff)
 
-            -- 更新上一帧开始时间（必须在定时器之前，因为下一帧开始时间就是当前帧开始时间）
+            -- 更新上一帧开始时间
             lastFrameStart = frame_start
 
             -- 等待下一帧（使用定时器，但设置超时保护）
