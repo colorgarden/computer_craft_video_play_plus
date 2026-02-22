@@ -1,4 +1,4 @@
--- play.lua (最终版，预加载带重试限制)
+-- 简化版视频播放器
 local gpu = peripheral.wrap("tm_gpu_9")
 gpu.refreshSize()
 gpu.setSize(64)
@@ -440,6 +440,25 @@ local function renderVideo()
                 frameIndex .. " / " .. totalFrames ..
                 " fps: " .. string.format("%.1f", smooth_fps),
                 0xffffff)
+
+            -- ====== 添加进度条 (已下移7格到第9行，绿色，带宽度判断) ======
+            if h >= 9 then
+                local progress = frameIndex / totalFrames
+                local percent = string.format("%.1f%%", progress * 100)
+                if w >= 256 then
+                    -- 完整进度条（图形条 + 百分比）
+                    local bar_length = 20
+                    local filled = math.floor(progress * bar_length)
+                    local bar = string.rep("=", filled) .. string.rep("-", bar_length - filled)
+                    local progress_text = "Progress: [" .. bar .. "] " .. percent
+                    gpu.drawText(1, 9, progress_text, 0x00FF00)  -- 绿色
+                else
+                    -- 仅显示百分比（无图形条）
+                    local progress_text = "Progress: " .. percent
+                    gpu.drawText(1, 9, progress_text, 0x00FF00)  -- 绿色
+                end
+            end
+            -- ====== 进度条结束 ======
 
             -- 更新上一帧开始时间
             lastFrameStart = frame_start
